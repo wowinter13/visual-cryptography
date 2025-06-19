@@ -1,6 +1,30 @@
 [package]
-name = "qevcs"
+name = "visual-cryptography"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Vlad Dyachenko <gotta.go.vlad@gmail.com>"]
+description = "A Rust implementation of visual cryptography algorithms supporting multiple schemes and block sizes"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/visual-cryptography"
+keywords = [
+  "cryptography",
+  "visual-cryptography",
+  "image-processing",
+  "steganography",
+]
+categories = ["cryptography", "multimedia::images"]
 
 [dependencies]
+image = "0.24"
+rand = "0.9.1"
+thiserror = "1.0"
+nalgebra = "0.32"
+qrcode = "0.14"
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3.8"
+
+# [[bench]]
+# name = "benchmarks"
+# harness = false
