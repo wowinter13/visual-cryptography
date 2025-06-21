@@ -12,7 +12,7 @@ use crate::{
     VCConfig,
 };
 use image::{DynamicImage, ImageBuffer, Luma, Rgb};
-use rand::Rng;
+use rand::{seq::SliceRandom, Rng};
 
 /// Available visual cryptography algorithms
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +23,7 @@ pub enum Algorithm {
     Progressive,
     /// Extended visual cryptography with meaningful shares
     ExtendedMeaningful,
-    /// Naor-Shamir original scheme
+    /// Naor-Shamir original scheme (1994)
     NaorShamir,
     /// Taghaddos-Latif for grayscale
     TaghaddosLatif,
@@ -467,22 +467,18 @@ fn naor_shamir_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Vec<Sh
     // The original Naor-Shamir is a (2,2) scheme with 2x2 pixel expansion
     if config.num_shares != 2 || config.threshold != 2 {
         return Err(VCError::InvalidConfiguration(
-            "Naor-Shamir scheme requires exactly 2 shares with threshold 2".to_string(),
+            "Original Naor-Shamir scheme requires exactly 2 shares with threshold 2".to_string(),
         ));
     }
 
     let binary = convert_to_binary(image);
     let (width, height) = (binary.width(), binary.height());
 
-    // Fixed 2x2 patterns for Naor-Shamir
-    let patterns = vec![
-        vec![1, 1, 0, 0],
-        vec![1, 0, 1, 0],
-        vec![1, 0, 0, 1],
-        vec![0, 1, 1, 0],
-        vec![0, 1, 0, 1],
-        vec![0, 0, 1, 1],
-    ];
+    // Fixed matrices for Naor-Shamir as per the original paper
+    // For white pixels: both shares get identical patterns
+    let white_matrix = vec![vec![1, 1, 0, 0], vec![1, 1, 0, 0]];
+    // For black pixels: shares get complementary patterns
+    let black_matrix = vec![vec![1, 1, 0, 0], vec![0, 0, 1, 1]];
 
     let share_width = width * 2;
     let share_height = height * 2;
@@ -495,65 +491,78 @@ fn naor_shamir_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Vec<Sh
     for y in 0..height {
         for x in 0..width {
             let pixel = binary.get_pixel(x, y)[0];
-            let pattern_idx = rng.gen_range(0..patterns.len());
-            let pattern = &patterns[pattern_idx];
 
-            // Apply pattern to share 1
-            share1.put_pixel(x * 2, y * 2, Luma([if pattern[0] == 1 { 0 } else { 255 }]));
+            // Select appropriate matrix based on pixel value
+            let matrix = if pixel == 0 {
+                // black pixel
+                &black_matrix
+            } else {
+                // white pixel
+                &white_matrix
+            };
+
+            // Randomly permute columns (this is the key step in Naor-Shamir)
+            let mut columns: Vec<usize> = (0..4).collect();
+            columns.as_mut_slice().shuffle(&mut rng);
+
+            // Create permuted patterns for both shares
+            let share1_pattern = vec![
+                matrix[0][columns[0]],
+                matrix[0][columns[1]],
+                matrix[0][columns[2]],
+                matrix[0][columns[3]],
+            ];
+            let share2_pattern = vec![
+                matrix[1][columns[0]],
+                matrix[1][columns[1]],
+                matrix[1][columns[2]],
+                matrix[1][columns[3]],
+            ];
+
+            // Apply 2x2 patterns to shares
+            // Share 1
+            share1.put_pixel(
+                x * 2,
+                y * 2,
+                Luma([if share1_pattern[0] == 1 { 0 } else { 255 }]),
+            );
             share1.put_pixel(
                 x * 2 + 1,
                 y * 2,
-                Luma([if pattern[1] == 1 { 0 } else { 255 }]),
+                Luma([if share1_pattern[1] == 1 { 0 } else { 255 }]),
             );
             share1.put_pixel(
                 x * 2,
                 y * 2 + 1,
-                Luma([if pattern[2] == 1 { 0 } else { 255 }]),
+                Luma([if share1_pattern[2] == 1 { 0 } else { 255 }]),
             );
             share1.put_pixel(
                 x * 2 + 1,
                 y * 2 + 1,
-                Luma([if pattern[3] == 1 { 0 } else { 255 }]),
+                Luma([if share1_pattern[3] == 1 { 0 } else { 255 }]),
             );
 
-            // Apply pattern or complement to share 2
-            if pixel == 0 {
-                // Black: use complement pattern
-                share2.put_pixel(x * 2, y * 2, Luma([if pattern[0] == 0 { 0 } else { 255 }]));
-                share2.put_pixel(
-                    x * 2 + 1,
-                    y * 2,
-                    Luma([if pattern[1] == 0 { 0 } else { 255 }]),
-                );
-                share2.put_pixel(
-                    x * 2,
-                    y * 2 + 1,
-                    Luma([if pattern[2] == 0 { 0 } else { 255 }]),
-                );
-                share2.put_pixel(
-                    x * 2 + 1,
-                    y * 2 + 1,
-                    Luma([if pattern[3] == 0 { 0 } else { 255 }]),
-                );
-            } else {
-                // White: use same pattern
-                share2.put_pixel(x * 2, y * 2, Luma([if pattern[0] == 1 { 0 } else { 255 }]));
-                share2.put_pixel(
-                    x * 2 + 1,
-                    y * 2,
-                    Luma([if pattern[1] == 1 { 0 } else { 255 }]),
-                );
-                share2.put_pixel(
-                    x * 2,
-                    y * 2 + 1,
-                    Luma([if pattern[2] == 1 { 0 } else { 255 }]),
-                );
-                share2.put_pixel(
-                    x * 2 + 1,
-                    y * 2 + 1,
-                    Luma([if pattern[3] == 1 { 0 } else { 255 }]),
-                );
-            }
+            // Share 2
+            share2.put_pixel(
+                x * 2,
+                y * 2,
+                Luma([if share2_pattern[0] == 1 { 0 } else { 255 }]),
+            );
+            share2.put_pixel(
+                x * 2 + 1,
+                y * 2,
+                Luma([if share2_pattern[1] == 1 { 0 } else { 255 }]),
+            );
+            share2.put_pixel(
+                x * 2,
+                y * 2 + 1,
+                Luma([if share2_pattern[2] == 1 { 0 } else { 255 }]),
+            );
+            share2.put_pixel(
+                x * 2 + 1,
+                y * 2 + 1,
+                Luma([if share2_pattern[3] == 1 { 0 } else { 255 }]),
+            );
         }
     }
 
