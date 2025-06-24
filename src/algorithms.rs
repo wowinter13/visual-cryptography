@@ -593,19 +593,33 @@ fn naor_shamir_decrypt(shares: &[Share], config: &VCConfig) -> Result<DynamicIma
     basic_threshold_decrypt(shares, config)
 }
 
-/// Improved Taghaddos-Latif grayscale scheme with proper bit-plane processing
+/// Taghaddos-Latif grayscale scheme following the original paper exactly
 fn taghaddos_latif_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Vec<Share>> {
+    if config.num_shares != 2 {
+        return Err(VCError::InvalidConfiguration(
+            "Taghaddos-Latif scheme requires exactly 2 shares".to_string(),
+        ));
+    }
+
     let gray = image.to_luma8();
     let (width, height) = (gray.width(), gray.height());
 
-    // Use proper sharing matrices for each bit plane
-    let (white_matrix, black_matrix) =
-        generate_proper_sharing_matrices(config.threshold, config.num_shares)?;
+    // The 6 specific patterns from the original paper
+    let patterns = [
+        [1u8, 1u8, 0u8, 0u8],
+        [1u8, 0u8, 1u8, 0u8],
+        [1u8, 0u8, 0u8, 1u8],
+        [0u8, 1u8, 1u8, 0u8],
+        [0u8, 1u8, 0u8, 1u8],
+        [0u8, 0u8, 1u8, 1u8],
+    ];
 
-    let mut shares: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = Vec::new();
-    for _ in 0..config.num_shares {
-        shares.push(ImageBuffer::new(width, height));
-    }
+    // Pixel expansion by 2 (2x2 blocks)
+    let share_width = width * 2;
+    let share_height = height * 2;
+
+    let mut share_a = ImageBuffer::new(share_width, share_height);
+    let mut share_b = ImageBuffer::new(share_width, share_height);
 
     let mut rng = rand::thread_rng();
 
@@ -613,92 +627,145 @@ fn taghaddos_latif_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Ve
     for y in 0..height {
         for x in 0..width {
             let pixel_value = gray.get_pixel(x, y)[0];
-            let mut reconstructed_shares = vec![0u8; config.num_shares];
+            let mut share_a_colors = [0u8; 4];
+            let mut share_b_colors = [0u8; 4];
 
-            // Process each bit plane
+            // Process each bit plane (0-7)
             for bit_pos in 0..8 {
                 let bit = (pixel_value >> bit_pos) & 1;
-                let matrix = if bit == 1 {
-                    &black_matrix
+
+                // Randomly select one of the 6 patterns
+                let pattern = patterns[rng.gen_range(0..6)];
+
+                if bit == 1 {
+                    // White pixel (bit = 1): both shares get identical patterns
+                    for i in 0..4 {
+                        share_a_colors[i] |= (pattern[i] << bit_pos);
+                        share_b_colors[i] = share_a_colors[i];
+                    }
                 } else {
-                    &white_matrix
-                };
-
-                // Select random column
-                let col = rng.gen_range(0..matrix.ncols());
-
-                // Apply bit-plane sharing
-                for share_idx in 0..config.num_shares {
-                    let share_bit = matrix[(share_idx, col)];
-                    if share_bit == 1 {
-                        reconstructed_shares[share_idx] |= 1 << bit_pos;
+                    // Black pixel (bit = 0): share B gets complement of share A
+                    for i in 0..4 {
+                        share_a_colors[i] |= (pattern[i] << bit_pos);
+                        share_b_colors[i] |= ((1 - pattern[i]) << bit_pos);
                     }
                 }
             }
 
-            // Set pixel values in shares
-            for share_idx in 0..config.num_shares {
-                shares[share_idx].put_pixel(x, y, Luma([reconstructed_shares[share_idx]]));
-            }
+            // Draw 2x2 blocks for each share
+            let base_x = x * 2;
+            let base_y = y * 2;
+
+            // Share A 2x2 block
+            share_a.put_pixel(base_x, base_y, Luma([share_a_colors[0]]));
+            share_a.put_pixel(base_x + 1, base_y, Luma([share_a_colors[1]]));
+            share_a.put_pixel(base_x, base_y + 1, Luma([share_a_colors[2]]));
+            share_a.put_pixel(base_x + 1, base_y + 1, Luma([share_a_colors[3]]));
+
+            // Share B 2x2 block
+            share_b.put_pixel(base_x, base_y, Luma([share_b_colors[0]]));
+            share_b.put_pixel(base_x + 1, base_y, Luma([share_b_colors[1]]));
+            share_b.put_pixel(base_x, base_y + 1, Luma([share_b_colors[2]]));
+            share_b.put_pixel(base_x + 1, base_y + 1, Luma([share_b_colors[3]]));
         }
     }
 
-    // Convert to Share objects
-    let result: Vec<Share> = shares
-        .into_iter()
-        .enumerate()
-        .map(|(i, img)| {
-            Share::new(
-                DynamicImage::ImageLuma8(img),
-                i + 1,
-                config.num_shares,
-                width,
-                height,
-                1,
-                false,
-            )
-        })
-        .collect();
-
-    Ok(result)
+    Ok(vec![
+        Share::new(
+            DynamicImage::ImageLuma8(share_a),
+            1,
+            2,
+            width,
+            height,
+            2, // pixel expansion = 2
+            false,
+        ),
+        Share::new(
+            DynamicImage::ImageLuma8(share_b),
+            2,
+            2,
+            width,
+            height,
+            2, // pixel expansion = 2
+            false,
+        ),
+    ])
 }
 
-/// Improved Taghaddos-Latif decryption with proper reconstruction
-fn taghaddos_latif_decrypt(shares: &[Share], config: &VCConfig) -> Result<DynamicImage> {
-    if shares.len() < config.threshold {
+/// Taghaddos-Latif decryption using AND operation as per original paper
+fn taghaddos_latif_decrypt(shares: &[Share], _config: &VCConfig) -> Result<DynamicImage> {
+    if shares.len() < 2 {
         return Err(VCError::InsufficientShares {
-            required: config.threshold,
+            required: 2,
             provided: shares.len(),
         });
     }
 
-    let (width, height) = shares[0].dimensions();
+    let (expanded_width, expanded_height) = shares[0].dimensions();
+
+    // Original dimensions (accounting for pixel expansion)
+    let width = expanded_width / 2;
+    let height = expanded_height / 2;
+
     let mut result = ImageBuffer::new(width, height);
 
+    // Extract share images
+    let share_a = if let DynamicImage::ImageLuma8(img) = &shares[0].image {
+        img
+    } else {
+        return Err(VCError::DecryptionError(
+            "Share A is not grayscale".to_string(),
+        ));
+    };
+
+    let share_b = if let DynamicImage::ImageLuma8(img) = &shares[1].image {
+        img
+    } else {
+        return Err(VCError::DecryptionError(
+            "Share B is not grayscale".to_string(),
+        ));
+    };
+
+    // Process each original pixel (reconstructing from 2x2 blocks)
     for y in 0..height {
         for x in 0..width {
+            let base_x = x * 2;
+            let base_y = y * 2;
+
+            // Get the 2x2 block values from both shares
+            let share_a_block = [
+                share_a.get_pixel(base_x, base_y)[0],
+                share_a.get_pixel(base_x + 1, base_y)[0],
+                share_a.get_pixel(base_x, base_y + 1)[0],
+                share_a.get_pixel(base_x + 1, base_y + 1)[0],
+            ];
+
+            let share_b_block = [
+                share_b.get_pixel(base_x, base_y)[0],
+                share_b.get_pixel(base_x + 1, base_y)[0],
+                share_b.get_pixel(base_x, base_y + 1)[0],
+                share_b.get_pixel(base_x + 1, base_y + 1)[0],
+            ];
+
+            // Reconstruct pixel value using AND operation
             let mut reconstructed_value = 0u8;
 
-            // Reconstruct each bit plane
             for bit_pos in 0..8 {
-                let mut bit_sum = 0;
+                let mut reconstructed_bits = [0u8; 4];
 
-                // Sum bits from threshold number of shares
-                for i in 0..config.threshold {
-                    if let DynamicImage::ImageLuma8(img) = &shares[i].image {
-                        let share_value = img.get_pixel(x, y)[0];
-                        let bit = (share_value >> bit_pos) & 1;
-                        bit_sum += bit as u32;
-                    }
+                // Apply AND operation for each sub-pixel in the 2x2 block
+                for i in 0..4 {
+                    let bit_a = (share_a_block[i] >> bit_pos) & 1;
+                    let bit_b = (share_b_block[i] >> bit_pos) & 1;
+                    reconstructed_bits[i] = bit_a & bit_b;
                 }
 
-                // Majority voting for bit reconstruction
-                let reconstructed_bit = if bit_sum >= (config.threshold as u32 + 1) / 2 {
-                    1
-                } else {
-                    0
-                };
-                reconstructed_value |= (reconstructed_bit as u8) << bit_pos;
+                // Average the 4 sub-pixels to get the final bit
+                // (this follows the HVS perception model from the paper)
+                let sum = reconstructed_bits.iter().map(|&x| x as u32).sum::<u32>();
+                let average_bit = if sum >= 2 { 1 } else { 0 }; // majority voting for sub-pixels
+
+                reconstructed_value |= (average_bit as u8) << bit_pos;
             }
 
             result.put_pixel(x, y, Luma([reconstructed_value]));
