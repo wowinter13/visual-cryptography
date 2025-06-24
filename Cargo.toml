@@ -1,30 +1,32 @@
 [package]
 name = "visual-cryptography"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
-authors = ["Vlad Dyachenko <gotta.go.vlad@gmail.com>"]
+authors = ["Vlad Dyachenko wowinter13 <gotta.go.vlad@gmail.com>"]
 description = "A Rust implementation of visual cryptography algorithms supporting multiple schemes and block sizes"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/visual-cryptography"
+license = "MIT"
+repository = "https://github.com/wowinter13/visual-cryptography"
 keywords = [
   "cryptography",
   "visual-cryptography",
   "image-processing",
   "steganography",
 ]
-categories = ["cryptography", "multimedia::images"]
+categories = [
+  "cryptography",
+  "multimedia",
+  "algorithms",
+  "encoding",
+  "security",
+]
 
 [dependencies]
 image = "0.24"
 rand = "0.9.1"
 thiserror = "1.0"
-nalgebra = "0.32"
+nalgebra = "0.33.2"
 qrcode = "0.14"
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.6"
 tempfile = "3.8"
-
-# [[bench]]
-# name = "benchmarks"
-# harness = false
