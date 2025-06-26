@@ -775,7 +775,7 @@ fn taghaddos_latif_decrypt(shares: &[Share], _config: &VCConfig) -> Result<Dynam
     Ok(DynamicImage::ImageLuma8(result))
 }
 
-/// Proper Dhiman-Kasana EVCT(3,3) color scheme
+/// Dhiman-Kasana EVCT(3,3) color scheme
 fn dhiman_kasana_encrypt(
     image: &DynamicImage,
     config: &VCConfig,
@@ -790,80 +790,113 @@ fn dhiman_kasana_encrypt(
     let rgb = image.to_rgb8();
     let (width, height) = (rgb.width(), rgb.height());
 
-    // Generate color mixing matrices
-    let color_matrices = generate_color_mixing_matrices();
+    // Specific bit position coordinates for each RGB channel
+    let components = [
+        // R channel positions
+        [
+            (4, 4),
+            (4, 2),
+            (3, 1),
+            (2, 3),
+            (2, 0),
+            (1, 4),
+            (1, 2),
+            (0, 1),
+        ],
+        // G channel positions
+        [
+            (4, 3),
+            (3, 4),
+            (3, 2),
+            (2, 1),
+            (1, 3),
+            (1, 0),
+            (0, 4),
+            (0, 2),
+        ],
+        // B channel positions
+        [
+            (4, 1),
+            (3, 3),
+            (3, 0),
+            (2, 4),
+            (2, 2),
+            (1, 1),
+            (0, 3),
+            (0, 0),
+        ],
+    ];
+
+    // 5x5 pixel expansion
+    let share_width = width * 5;
+    let share_height = height * 5;
 
     let mut shares = Vec::new();
     for _ in 0..3 {
-        shares.push(ImageBuffer::new(width, height));
+        shares.push(ImageBuffer::new(share_width, share_height));
     }
 
-    let mut rng = rand::thread_rng();
+    // Check if cover images are provided before moving them
+    let has_cover_images = cover_images.is_some();
+
+    // Use cover images if provided, otherwise use default cover colors
+    let covers = if let Some(covers) = cover_images {
+        if covers.len() != 3 {
+            return Err(VCError::CoverImageError(
+                "Dhiman-Kasana requires exactly 3 cover images".to_string(),
+            ));
+        }
+        covers.into_iter().map(|img| img.to_rgb8()).collect()
+    } else {
+        // Default cover colors (white background)
+        vec![
+            ImageBuffer::from_pixel(width, height, Rgb([255, 255, 255])),
+            ImageBuffer::from_pixel(width, height, Rgb([255, 255, 255])),
+            ImageBuffer::from_pixel(width, height, Rgb([255, 255, 255])),
+        ]
+    };
 
     // Process each pixel
     for y in 0..height {
         for x in 0..width {
-            let pixel = rgb.get_pixel(x, y);
-            let [r, g, b] = pixel.0;
+            let secret_pixel = rgb.get_pixel(x, y);
+            let [r, g, b] = secret_pixel.0;
 
-            // Convert RGB to binary representation for each channel
-            let r_binary = convert_channel_to_binary(r);
-            let g_binary = convert_channel_to_binary(g);
-            let b_binary = convert_channel_to_binary(b);
+            // Process each share
+            for share_idx in 0..3 {
+                let cover_pixel = covers[share_idx].get_pixel(x, y);
 
-            // Process each color channel separately
-            let mut final_shares = [Rgb([0u8, 0u8, 0u8]); 3];
+                // Create 5x5 block filled with cover pixel color
+                let mut block = ImageBuffer::from_pixel(5, 5, *cover_pixel);
 
-            for channel in 0..3 {
-                let binary_value = match channel {
-                    0 => r_binary,
-                    1 => g_binary,
-                    2 => b_binary,
-                    _ => 0,
-                };
+                // Process each color channel
+                for (channel_idx, &channel_value) in [r, g, b].iter().enumerate() {
+                    let bit_positions = &components[channel_idx];
 
-                // Select appropriate basis matrix
-                let matrix_idx = binary_value as usize % color_matrices.basis_matrices.len();
-                let matrix = &color_matrices.basis_matrices[matrix_idx];
+                    // Process each bit of the channel (8 bits)
+                    for (bit_idx, &(bit_y, bit_x)) in bit_positions.iter().enumerate() {
+                        let bit = (channel_value >> bit_idx) & 1;
 
-                // Select random column
-                let col = rng.gen_range(0..matrix.ncols());
+                        // Encode bit: 1 = black (0,0,0), 0 = dark grey (30,30,30)
+                        let pixel_color = if bit == 1 {
+                            Rgb([0, 0, 0]) // Black for bit 1
+                        } else {
+                            Rgb([30, 30, 30]) // Dark grey for bit 0
+                        };
 
-                // Apply color mixing to shares
-                for share_idx in 0..3 {
-                    let intensity = matrix[(share_idx, col)];
-                    let color_value = if intensity == 1 {
-                        match channel {
-                            0 => r,
-                            1 => g,
-                            2 => b,
-                            _ => 0,
-                        }
-                    } else {
-                        0
-                    };
-
-                    match channel {
-                        0 => {
-                            final_shares[share_idx].0[0] =
-                                final_shares[share_idx].0[0].saturating_add(color_value)
-                        }
-                        1 => {
-                            final_shares[share_idx].0[1] =
-                                final_shares[share_idx].0[1].saturating_add(color_value)
-                        }
-                        2 => {
-                            final_shares[share_idx].0[2] =
-                                final_shares[share_idx].0[2].saturating_add(color_value)
-                        }
-                        _ => {}
+                        block.put_pixel(bit_x, bit_y, pixel_color);
                     }
                 }
-            }
 
-            // Set pixel values in shares
-            for share_idx in 0..3 {
-                shares[share_idx].put_pixel(x, y, final_shares[share_idx]);
+                // Paste the 5x5 block into the share
+                let base_x = x * 5;
+                let base_y = y * 5;
+                for block_y in 0..5 {
+                    for block_x in 0..5 {
+                        let pixel = block.get_pixel(block_x, block_y);
+                        shares[share_idx].put_pixel(base_x + block_x, base_y + block_y, *pixel);
+                    }
+                }
             }
         }
     }
@@ -879,8 +912,8 @@ fn dhiman_kasana_encrypt(
                 3,
                 width,
                 height,
-                1,
-                false,
+                5, // 5x5 pixel expansion
+                has_cover_images,
             )
         })
         .collect();
@@ -888,16 +921,7 @@ fn dhiman_kasana_encrypt(
     Ok(result)
 }
 
-/// Convert color channel value to binary representation
-fn convert_channel_to_binary(value: u8) -> u8 {
-    if value > 127 {
-        1
-    } else {
-        0
-    }
-}
-
-/// Proper Dhiman-Kasana decryption
+/// Dhiman-Kasana decryption using XOR operation
 fn dhiman_kasana_decrypt(shares: &[Share], _config: &VCConfig) -> Result<DynamicImage> {
     if shares.len() < 3 {
         return Err(VCError::InsufficientShares {
@@ -906,35 +930,92 @@ fn dhiman_kasana_decrypt(shares: &[Share], _config: &VCConfig) -> Result<Dynamic
         });
     }
 
-    let (width, height) = shares[0].dimensions();
+    // Get dimensions from the first share (expanded)
+    let (expanded_width, expanded_height) = shares[0].dimensions();
+
+    // Original dimensions (accounting for 5x5 pixel expansion)
+    let width = expanded_width / 5;
+    let height = expanded_height / 5;
+
     let mut result = ImageBuffer::new(width, height);
 
+    // Bit position coordinates for each RGB channel
+    let components = [
+        // R channel positions
+        [
+            (4, 4),
+            (4, 2),
+            (3, 1),
+            (2, 3),
+            (2, 0),
+            (1, 4),
+            (1, 2),
+            (0, 1),
+        ],
+        // G channel positions
+        [
+            (4, 3),
+            (3, 4),
+            (3, 2),
+            (2, 1),
+            (1, 3),
+            (1, 0),
+            (0, 4),
+            (0, 2),
+        ],
+        // B channel positions
+        [
+            (4, 1),
+            (3, 3),
+            (3, 0),
+            (2, 4),
+            (2, 2),
+            (1, 1),
+            (0, 3),
+            (0, 0),
+        ],
+    ];
+
+    // Extract RGB images from shares
+    let share_images: Vec<&ImageBuffer<Rgb<u8>, Vec<u8>>> = shares
+        .iter()
+        .map(|share| {
+            if let DynamicImage::ImageRgb8(img) = &share.image {
+                img
+            } else {
+                panic!("Share is not RGB format");
+            }
+        })
+        .collect();
+
+    // Process each original pixel
     for y in 0..height {
         for x in 0..width {
-            let mut final_pixel = [0u8; 3];
+            let mut reconstructed_pixel = [0u8; 3];
 
-            // Reconstruct each color channel
-            for channel in 0..3 {
-                let mut channel_sum = 0u16;
-                let mut count = 0;
+            // Process each color channel
+            for channel_idx in 0..3 {
+                let bit_positions = &components[channel_idx];
+                let mut channel_value = 0u8;
 
-                for share in shares {
-                    if let DynamicImage::ImageRgb8(img) = &share.image {
-                        let pixel = img.get_pixel(x, y);
-                        channel_sum += pixel.0[channel] as u16;
-                        count += 1;
-                    }
+                // Extract bits from each position
+                for (bit_idx, &(bit_y, bit_x)) in bit_positions.iter().enumerate() {
+                    let base_x = x * 5;
+                    let base_y = y * 5;
+
+                    // Get the pixel from the corresponding share at the bit position
+                    let pixel = share_images[channel_idx].get_pixel(base_x + bit_x, base_y + bit_y);
+
+                    // Decode bit: (0,0,0) = 1, anything else = 0
+                    let bit = if pixel.0 == [0, 0, 0] { 1 } else { 0 };
+
+                    channel_value |= bit << bit_idx;
                 }
 
-                // Average the channel values (could use other reconstruction methods)
-                final_pixel[channel] = if count > 0 {
-                    (channel_sum / count as u16).min(255) as u8
-                } else {
-                    0
-                };
+                reconstructed_pixel[channel_idx] = channel_value;
             }
 
-            result.put_pixel(x, y, Rgb(final_pixel));
+            result.put_pixel(x, y, Rgb(reconstructed_pixel));
         }
     }
 

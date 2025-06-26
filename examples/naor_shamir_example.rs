@@ -92,7 +92,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Load image
 fn load_secret_image() -> DynamicImage {
     let path = "assets/dino.png";
 
