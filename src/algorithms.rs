@@ -25,12 +25,14 @@ pub enum Algorithm {
     ExtendedMeaningful,
     /// Naor-Shamir original scheme (1994)
     NaorShamir,
-    /// Taghaddos-Latif for grayscale
+    /// Taghaddos-Latif for grayscale (2014)
     TaghaddosLatif,
-    /// Dhiman-Kasana for color images
+    /// Dhiman-Kasana for color images (2018)
     DhimanKasana,
     /// XOR-based scheme for better contrast
     XorBased,
+    /// Yamaguchi-Nakajima Extended Visual Cryptography for Natural Images
+    YamaguchiNakajima,
 }
 
 /// Trait for visual cryptography schemes
@@ -61,6 +63,7 @@ pub fn encrypt(
         Algorithm::TaghaddosLatif => taghaddos_latif_encrypt(image, config),
         Algorithm::DhimanKasana => dhiman_kasana_encrypt(image, config, cover_images),
         Algorithm::XorBased => xor_based_encrypt(image, config),
+        Algorithm::YamaguchiNakajima => yamaguchi_nakajima_encrypt(image, config, cover_images),
     }
 }
 
@@ -74,6 +77,7 @@ pub fn decrypt(shares: &[Share], config: &VCConfig) -> Result<DynamicImage> {
         Algorithm::TaghaddosLatif => taghaddos_latif_decrypt(shares, config),
         Algorithm::DhimanKasana => dhiman_kasana_decrypt(shares, config),
         Algorithm::XorBased => xor_based_decrypt(shares, config),
+        Algorithm::YamaguchiNakajima => yamaguchi_nakajima_decrypt(shares, config),
     }
 }
 
@@ -1020,4 +1024,369 @@ fn dhiman_kasana_decrypt(shares: &[Share], _config: &VCConfig) -> Result<Dynamic
     }
 
     Ok(DynamicImage::ImageRgb8(result))
+}
+
+/// Yamaguchi-Nakajima Extended Visual Cryptography for Natural Images
+/// Based on Nakajima & Yamaguchi (2002)
+fn yamaguchi_nakajima_encrypt(
+    image: &DynamicImage,
+    config: &VCConfig,
+    cover_images: Option<Vec<DynamicImage>>,
+) -> Result<Vec<Share>> {
+    if config.num_shares != 2 {
+        return Err(VCError::InvalidConfiguration(
+            "Yamaguchi-Nakajima scheme requires exactly 2 shares".to_string(),
+        ));
+    }
+
+    let cover_images = cover_images.ok_or_else(|| {
+        VCError::CoverImageError(
+            "Yamaguchi-Nakajima scheme requires 2 cover images (sheet images)".to_string(),
+        )
+    })?;
+
+    if cover_images.len() != 2 {
+        return Err(VCError::CoverImageError(
+            "Yamaguchi-Nakajima scheme requires exactly 2 cover images".to_string(),
+        ));
+    }
+
+    let target = image.to_luma8();
+    let sheet1 = cover_images[0].to_luma8();
+    let sheet2 = cover_images[1].to_luma8();
+    let (width, height) = (target.width(), target.height());
+
+    // Resize all images to same size
+    let sheet1 = image::imageops::resize(
+        &sheet1,
+        width,
+        height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let sheet2 = image::imageops::resize(
+        &sheet2,
+        width,
+        height,
+        image::imageops::FilterType::Lanczos3,
+    );
+
+    // Number of subpixels per pixel (default 16 for 4x4 subpixel structure)
+    let m = config.block_size.max(4) as usize;
+    let sub_size = (m as f64).sqrt() as usize;
+
+    // Contrast adjustment
+    let contrast = 0.6;
+    let l = (1.0 - contrast) / 2.0; // Lower bound
+    let u = l + contrast; // Upper bound
+
+    // Process images with contrast adjustment and halftoning
+    let sheet1_processed = apply_contrast_and_halftone(&sheet1, contrast, l);
+    let sheet2_processed = apply_contrast_and_halftone(&sheet2, contrast, l);
+    let target_processed = apply_halftone_target(&target, contrast);
+
+    // Create output sheets with subpixel expansion
+    let out_width = width * sub_size as u32;
+    let out_height = height * sub_size as u32;
+    let mut out_sheet1 = ImageBuffer::new(out_width, out_height);
+    let mut out_sheet2 = ImageBuffer::new(out_width, out_height);
+
+    let mut rng = rand::thread_rng();
+
+    // Process each pixel
+    for y in 0..height {
+        for x in 0..width {
+            // Get transparency values (0.0 to 1.0)
+            let t1 = sheet1_processed.get_pixel(x, y)[0] as f64 / 255.0;
+            let t2 = sheet2_processed.get_pixel(x, y)[0] as f64 / 255.0;
+            let tt = target_processed.get_pixel(x, y)[0] as f64 / 255.0;
+
+            // Adjust triplet if constraint violated
+            let (t1, t2, tt) = adjust_triplet(t1, t2, tt);
+
+            // Convert to subpixel counts
+            let s1 = (t1 * m as f64).round() as usize;
+            let s2 = (t2 * m as f64).round() as usize;
+            let st = (tt * m as f64).round() as usize;
+
+            // Generate valid Boolean matrices
+            let matrices = generate_boolean_matrices(s1, s2, st, m);
+
+            if !matrices.is_empty() {
+                // Randomly select a matrix
+                let matrix = &matrices[rng.gen_range(0..matrices.len())];
+
+                // Fill subpixels
+                for i in 0..sub_size {
+                    for j in 0..sub_size {
+                        let idx = i * sub_size + j;
+                        if idx < m {
+                            let pixel_val1 = if matrix[0][idx] == 1 { 255 } else { 0 };
+                            let pixel_val2 = if matrix[1][idx] == 1 { 255 } else { 0 };
+
+                            out_sheet1.put_pixel(
+                                x * sub_size as u32 + j as u32,
+                                y * sub_size as u32 + i as u32,
+                                Luma([pixel_val1]),
+                            );
+                            out_sheet2.put_pixel(
+                                x * sub_size as u32 + j as u32,
+                                y * sub_size as u32 + i as u32,
+                                Luma([pixel_val2]),
+                            );
+                        }
+                    }
+                }
+            } else {
+                // Fallback: fill with random pattern
+                for i in 0..sub_size {
+                    for j in 0..sub_size {
+                        let val1 = if rng.gen_bool(0.5) { 255 } else { 0 };
+                        let val2 = if rng.gen_bool(0.5) { 255 } else { 0 };
+
+                        out_sheet1.put_pixel(
+                            x * sub_size as u32 + j as u32,
+                            y * sub_size as u32 + i as u32,
+                            Luma([val1]),
+                        );
+                        out_sheet2.put_pixel(
+                            x * sub_size as u32 + j as u32,
+                            y * sub_size as u32 + i as u32,
+                            Luma([val2]),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(vec![
+        Share::new(
+            DynamicImage::ImageLuma8(out_sheet1),
+            1,
+            2,
+            width,
+            height,
+            sub_size,
+            true,
+        ),
+        Share::new(
+            DynamicImage::ImageLuma8(out_sheet2),
+            2,
+            2,
+            width,
+            height,
+            sub_size,
+            true,
+        ),
+    ])
+}
+
+/// Yamaguchi-Nakajima decryption using AND operation
+fn yamaguchi_nakajima_decrypt(shares: &[Share], _config: &VCConfig) -> Result<DynamicImage> {
+    if shares.len() < 2 {
+        return Err(VCError::InsufficientShares {
+            required: 2,
+            provided: shares.len(),
+        });
+    }
+
+    let (expanded_width, expanded_height) = shares[0].dimensions();
+
+    // Extract share images
+    let sheet1 = if let DynamicImage::ImageLuma8(img) = &shares[0].image {
+        img
+    } else {
+        return Err(VCError::DecryptionError(
+            "Share 1 is not grayscale".to_string(),
+        ));
+    };
+
+    let sheet2 = if let DynamicImage::ImageLuma8(img) = &shares[1].image {
+        img
+    } else {
+        return Err(VCError::DecryptionError(
+            "Share 2 is not grayscale".to_string(),
+        ));
+    };
+
+    // Create result image with expanded dimensions (no downsampling)
+    let mut result = ImageBuffer::new(expanded_width, expanded_height);
+
+    // Reveal target using Boolean AND operation
+    for y in 0..expanded_height {
+        for x in 0..expanded_width {
+            let pixel1 = sheet1.get_pixel(x, y)[0];
+            let pixel2 = sheet2.get_pixel(x, y)[0];
+
+            // Boolean AND: both must be white (255) for result to be white
+            let result_pixel = if pixel1 == 255 && pixel2 == 255 {
+                255
+            } else {
+                0
+            };
+            result.put_pixel(x, y, Luma([result_pixel]));
+        }
+    }
+
+    Ok(DynamicImage::ImageLuma8(result))
+}
+
+/// Apply contrast adjustment and Floyd-Steinberg error diffusion halftoning
+fn apply_contrast_and_halftone(
+    image: &ImageBuffer<Luma<u8>, Vec<u8>>,
+    contrast: f64,
+    l: f64,
+) -> ImageBuffer<Luma<u8>, Vec<u8>> {
+    let (width, height) = (image.width(), image.height());
+    let mut working_image = ImageBuffer::new(width, height);
+
+    // Apply contrast adjustment
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = image.get_pixel(x, y)[0] as f64 / 255.0;
+            let adjusted = l + pixel * contrast;
+            working_image.put_pixel(x, y, Luma([(adjusted * 255.0) as u8]));
+        }
+    }
+
+    // Apply Floyd-Steinberg error diffusion
+    floyd_steinberg_dithering(&working_image)
+}
+
+/// Apply halftoning to target image
+fn apply_halftone_target(
+    image: &ImageBuffer<Luma<u8>, Vec<u8>>,
+    contrast: f64,
+) -> ImageBuffer<Luma<u8>, Vec<u8>> {
+    let (width, height) = (image.width(), image.height());
+    let mut working_image = ImageBuffer::new(width, height);
+
+    // Apply contrast adjustment (different for target)
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = image.get_pixel(x, y)[0] as f64 / 255.0;
+            let adjusted = pixel * contrast;
+            working_image.put_pixel(x, y, Luma([(adjusted * 255.0) as u8]));
+        }
+    }
+
+    // Apply Floyd-Steinberg error diffusion
+    floyd_steinberg_dithering(&working_image)
+}
+
+/// Floyd-Steinberg error diffusion algorithm
+fn floyd_steinberg_dithering(
+    image: &ImageBuffer<Luma<u8>, Vec<u8>>,
+) -> ImageBuffer<Luma<u8>, Vec<u8>> {
+    let (width, height) = (image.width(), image.height());
+    let mut working = vec![vec![0.0; width as usize]; height as usize];
+    let mut result = ImageBuffer::new(width, height);
+
+    // Copy to working array
+    for y in 0..height {
+        for x in 0..width {
+            working[y as usize][x as usize] = image.get_pixel(x, y)[0] as f64 / 255.0;
+        }
+    }
+
+    // Floyd-Steinberg error diffusion
+    for y in 0..height {
+        for x in 0..width {
+            let old_pixel = working[y as usize][x as usize];
+            let new_pixel = if old_pixel > 0.5 { 1.0 } else { 0.0 };
+            result.put_pixel(x, y, Luma([(new_pixel * 255.0) as u8]));
+
+            let error = old_pixel - new_pixel;
+
+            // Distribute error to neighboring pixels
+            if x + 1 < width {
+                working[y as usize][(x + 1) as usize] += error * 7.0 / 16.0;
+            }
+            if y + 1 < height {
+                if x > 0 {
+                    working[(y + 1) as usize][(x - 1) as usize] += error * 3.0 / 16.0;
+                }
+                working[(y + 1) as usize][x as usize] += error * 5.0 / 16.0;
+                if x + 1 < width {
+                    working[(y + 1) as usize][(x + 1) as usize] += error * 1.0 / 16.0;
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Check if a triplet satisfies the encryption constraint
+fn check_constraint(t1: f64, t2: f64, tt: f64) -> bool {
+    let min_tt = (0.0_f64).max(t1 + t2 - 1.0);
+    let max_tt = t1.min(t2);
+    min_tt <= tt && tt <= max_tt
+}
+
+/// Adjust triplet values if they violate the constraint
+fn adjust_triplet(t1: f64, t2: f64, tt: f64) -> (f64, f64, f64) {
+    let min_tt = (0.0_f64).max(t1 + t2 - 1.0);
+    let max_tt = t1.min(t2);
+
+    let tt_adj = if tt < min_tt {
+        min_tt
+    } else if tt > max_tt {
+        max_tt
+    } else {
+        tt
+    };
+
+    (t1, t2, tt_adj)
+}
+
+/// Generate all valid Boolean matrices for given transparency values
+fn generate_boolean_matrices(s1: usize, s2: usize, st: usize, m: usize) -> Vec<Vec<Vec<u8>>> {
+    // Calculate subpixel pair counts
+    let p11 = st; // Both transparent
+    let p10 = s1.saturating_sub(st); // Sheet1 transparent, sheet2 opaque
+    let p01 = s2.saturating_sub(st); // Sheet1 opaque, sheet2 transparent
+    let p00 = m.saturating_sub(p11 + p10 + p01); // Both opaque
+
+    // Check validity
+    if p11 + p10 + p01 + p00 != m {
+        return vec![];
+    }
+
+    // Create base matrix patterns
+    let mut base_patterns = Vec::new();
+
+    // Add transparent-transparent pairs
+    for _ in 0..p11 {
+        base_patterns.push([1, 1]);
+    }
+    // Add transparent-opaque pairs
+    for _ in 0..p10 {
+        base_patterns.push([1, 0]);
+    }
+    // Add opaque-transparent pairs
+    for _ in 0..p01 {
+        base_patterns.push([0, 1]);
+    }
+    // Add opaque-opaque pairs
+    for _ in 0..p00 {
+        base_patterns.push([0, 0]);
+    }
+
+    // Generate a single valid matrix (could be extended to generate all permutations)
+    let mut rng = rand::thread_rng();
+    base_patterns.shuffle(&mut rng);
+
+    let matrix = vec![
+        base_patterns
+            .iter()
+            .map(|pair| pair[0])
+            .collect::<Vec<u8>>(),
+        base_patterns
+            .iter()
+            .map(|pair| pair[1])
+            .collect::<Vec<u8>>(),
+    ];
+
+    vec![matrix]
 }
