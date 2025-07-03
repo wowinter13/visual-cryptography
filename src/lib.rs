@@ -9,13 +9,11 @@
 pub mod algorithms;
 pub mod error;
 pub mod matrix;
-pub mod qr_code;
 pub mod share;
 pub mod utils;
 
 pub use algorithms::{Algorithm, VCScheme};
 pub use error::{Result, VCError};
-pub use qr_code::{QrErrorCorrection, QrShare, QrVcConfig, QrVisualCryptography};
 pub use share::{Share, ShareType};
 
 // Re-export common types
