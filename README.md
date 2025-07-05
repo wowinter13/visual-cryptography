@@ -50,7 +50,7 @@ let decrypted = vc.decrypt(&shares)?;
 ```
 
 
-There is also an /examples` directory with demonstration programs. You can run them with:
+There is also an `/examples` directory with demonstration programs. You can run them with:
 `cargo run --example <example_name>` (e.g. `cargo run --example xor_based_example`).
 
 
