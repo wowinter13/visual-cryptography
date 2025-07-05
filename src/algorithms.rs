@@ -2,13 +2,9 @@
 
 use crate::{
     error::{Result, VCError},
-    matrix::{
-        generate_basic_matrices, generate_color_mixing_matrices, generate_dispatching_matrices,
-        generate_proper_sharing_matrices, generate_xor_matrices, select_dispatching_row,
-        ColorMixingMatrices, XorMatrices,
-    },
+    matrix::{generate_basic_matrices, generate_xor_matrices},
     share::{stack_shares, Share},
-    utils::{apply_halftone, convert_to_binary, expand_pixel},
+    utils::convert_to_binary,
     VCConfig,
 };
 use image::{DynamicImage, ImageBuffer, Luma, Rgb};
@@ -19,10 +15,6 @@ use rand::{seq::SliceRandom, Rng};
 pub enum Algorithm {
     /// Basic (k,n) threshold scheme
     BasicThreshold,
-    /// Progressive visual cryptography
-    Progressive,
-    /// Extended visual cryptography with meaningful shares
-    ExtendedMeaningful,
     /// Naor-Shamir original scheme (1994)
     NaorShamir,
     /// Taghaddos-Latif for grayscale (2014)
@@ -57,8 +49,6 @@ pub fn encrypt(
 ) -> Result<Vec<Share>> {
     match config.algorithm {
         Algorithm::BasicThreshold => basic_threshold_encrypt(image, config),
-        Algorithm::Progressive => progressive_encrypt(image, config, cover_images),
-        Algorithm::ExtendedMeaningful => extended_meaningful_encrypt(image, config, cover_images),
         Algorithm::NaorShamir => naor_shamir_encrypt(image, config),
         Algorithm::TaghaddosLatif => taghaddos_latif_encrypt(image, config),
         Algorithm::DhimanKasana => dhiman_kasana_encrypt(image, config, cover_images),
@@ -71,8 +61,6 @@ pub fn encrypt(
 pub fn decrypt(shares: &[Share], config: &VCConfig) -> Result<DynamicImage> {
     match config.algorithm {
         Algorithm::BasicThreshold => basic_threshold_decrypt(shares, config),
-        Algorithm::Progressive => progressive_decrypt(shares, config),
-        Algorithm::ExtendedMeaningful => extended_meaningful_decrypt(shares, config),
         Algorithm::NaorShamir => naor_shamir_decrypt(shares, config),
         Algorithm::TaghaddosLatif => taghaddos_latif_decrypt(shares, config),
         Algorithm::DhimanKasana => dhiman_kasana_decrypt(shares, config),
@@ -89,12 +77,9 @@ fn xor_based_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Vec<Shar
     // Generate XOR matrices
     let xor_matrices = generate_xor_matrices(config.num_shares)?;
 
-    let mut shares = Vec::new();
-    for i in 0..config.num_shares {
-        shares.push(ImageBuffer::new(width, height));
-    }
+    let mut shares = vec![ImageBuffer::new(width, height); config.num_shares];
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Process each pixel
     for y in 0..height {
@@ -110,7 +95,7 @@ fn xor_based_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Vec<Shar
             };
 
             // Select random column
-            let col = rng.gen_range(0..matrix.ncols());
+            let col = rng.random_range(0..matrix.ncols());
 
             // Distribute values to shares
             for share_idx in 0..config.num_shares {
@@ -187,12 +172,9 @@ fn basic_threshold_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Ve
     let share_width = width * config.block_size as u32;
     let share_height = height * config.block_size as u32;
 
-    let mut shares = Vec::new();
-    for i in 0..config.num_shares {
-        shares.push(ImageBuffer::new(share_width, share_height));
-    }
+    let mut shares = vec![ImageBuffer::new(share_width, share_height); config.num_shares];
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Process each pixel
     for y in 0..height {
@@ -202,7 +184,7 @@ fn basic_threshold_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Ve
             let matrix = &matrices[matrix_idx];
 
             // Select a random column from the matrix
-            let col = rng.gen_range(0..matrix.ncols());
+            let col = rng.random_range(0..matrix.ncols());
 
             // Distribute the column values to shares
             for share_idx in 0..config.num_shares {
@@ -253,219 +235,6 @@ fn basic_threshold_decrypt(shares: &[Share], _config: &VCConfig) -> Result<Dynam
     }
 }
 
-/// Progressive visual cryptography encryption
-fn progressive_encrypt(
-    image: &DynamicImage,
-    config: &VCConfig,
-    cover_images: Option<Vec<DynamicImage>>,
-) -> Result<Vec<Share>> {
-    // Convert to binary
-    let binary = convert_to_binary(image);
-    let (width, height) = (binary.width(), binary.height());
-
-    // Use meaningful shares if cover images are provided
-    if let Some(covers) = cover_images {
-        if covers.len() != config.num_shares {
-            return Err(VCError::CoverImageError(format!(
-                "Number of cover images ({}) must match number of shares ({})",
-                covers.len(),
-                config.num_shares
-            )));
-        }
-
-        // Generate dispatching matrices
-        let i = config.num_shares; // Use n for maximum contrast
-        let matrices = generate_dispatching_matrices(config.num_shares, i)?;
-
-        let mut shares = Vec::new();
-
-        for share_idx in 0..config.num_shares {
-            let mut share_img = ImageBuffer::new(width, height);
-            let cover_binary = convert_to_binary(&covers[share_idx]);
-
-            for y in 0..height {
-                for x in 0..width {
-                    let secret_pixel = binary.get_pixel(x, y)[0] == 0; // true if black
-                    let cover_pixel = cover_binary.get_pixel(x, y)[0] == 0; // true if black
-
-                    let row = select_dispatching_row(&matrices, secret_pixel, cover_pixel);
-                    let value = if row[share_idx] == 1 { 0u8 } else { 255u8 };
-
-                    share_img.put_pixel(x, y, Luma([value]));
-                }
-            }
-
-            shares.push(Share::new(
-                DynamicImage::ImageLuma8(share_img),
-                share_idx + 1,
-                config.num_shares,
-                width,
-                height,
-                1,    // No pixel expansion
-                true, // Meaningful share
-            ));
-        }
-
-        Ok(shares)
-    } else {
-        // Use proper progressive matrix construction
-        progressive_matrix_based_encrypt(image, config)
-    }
-}
-
-/// Proper progressive encryption using matrix construction
-fn progressive_matrix_based_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Vec<Share>> {
-    let binary = convert_to_binary(image);
-    let (width, height) = (binary.width(), binary.height());
-
-    // Generate proper sharing matrices for progressive revelation
-    let (white_matrix, black_matrix) = generate_proper_sharing_matrices(2, config.num_shares)?;
-
-    let mut shares = Vec::new();
-    for i in 0..config.num_shares {
-        shares.push(ImageBuffer::new(width, height));
-    }
-
-    let mut rng = rand::thread_rng();
-
-    // Process each pixel
-    for y in 0..height {
-        for x in 0..width {
-            let pixel = binary.get_pixel(x, y)[0];
-            let is_black = pixel == 0;
-
-            // Select appropriate matrix
-            let matrix = if is_black {
-                &black_matrix
-            } else {
-                &white_matrix
-            };
-
-            // For progressive schemes, weight column selection by share index
-            let total_cols = matrix.ncols();
-            let mut col_weights = Vec::new();
-
-            for col in 0..total_cols {
-                // Calculate weight based on how many participants have black pixels
-                let black_count = (0..config.num_shares)
-                    .map(|row| matrix[(row, col)] as usize)
-                    .sum::<usize>();
-
-                // Higher weight for patterns that progressively reveal
-                let weight = if is_black {
-                    (config.num_shares - black_count) + 1
-                } else {
-                    black_count + 1
-                };
-
-                col_weights.push(weight);
-            }
-
-            // Weighted random selection
-            let total_weight: usize = col_weights.iter().sum();
-            let mut random_weight = rng.gen_range(0..total_weight);
-            let mut selected_col = 0;
-
-            for (col, &weight) in col_weights.iter().enumerate() {
-                if random_weight < weight {
-                    selected_col = col;
-                    break;
-                }
-                random_weight -= weight;
-            }
-
-            // Apply selected column to shares
-            for share_idx in 0..config.num_shares {
-                let value = matrix[(share_idx, selected_col)];
-                let pixel_value = if value == 1 { 0u8 } else { 255u8 };
-                shares[share_idx].put_pixel(x, y, Luma([pixel_value]));
-            }
-        }
-    }
-
-    // Convert to Share objects
-    let result: Vec<Share> = shares
-        .into_iter()
-        .enumerate()
-        .map(|(i, img)| {
-            Share::new(
-                DynamicImage::ImageLuma8(img),
-                i + 1,
-                config.num_shares,
-                width,
-                height,
-                1,
-                false,
-            )
-        })
-        .collect();
-
-    Ok(result)
-}
-
-/// Progressive decryption
-fn progressive_decrypt(shares: &[Share], _config: &VCConfig) -> Result<DynamicImage> {
-    basic_threshold_decrypt(shares, _config)
-}
-
-/// Extended meaningful shares encryption
-fn extended_meaningful_encrypt(
-    image: &DynamicImage,
-    config: &VCConfig,
-    cover_images: Option<Vec<DynamicImage>>,
-) -> Result<Vec<Share>> {
-    if cover_images.is_none() {
-        return Err(VCError::CoverImageError(
-            "Extended meaningful scheme requires cover images".to_string(),
-        ));
-    }
-
-    // Use proper extended VCS algorithm
-    let binary = convert_to_binary(image);
-    let (width, height) = (binary.width(), binary.height());
-    let covers = cover_images.unwrap();
-
-    // Generate dispatching matrices for extended scheme
-    let matrices = generate_dispatching_matrices(config.num_shares, config.num_shares)?;
-
-    let mut shares = Vec::new();
-
-    for share_idx in 0..config.num_shares {
-        let mut share_img = ImageBuffer::new(width, height);
-        let cover_binary = convert_to_binary(&covers[share_idx]);
-
-        for y in 0..height {
-            for x in 0..width {
-                let secret_pixel = binary.get_pixel(x, y)[0] == 0;
-                let cover_pixel = cover_binary.get_pixel(x, y)[0] == 0;
-
-                // Use extended algorithm logic
-                let row = select_dispatching_row(&matrices, secret_pixel, cover_pixel);
-                let value = if row[share_idx] == 1 { 0u8 } else { 255u8 };
-
-                share_img.put_pixel(x, y, Luma([value]));
-            }
-        }
-
-        shares.push(Share::new(
-            DynamicImage::ImageLuma8(share_img),
-            share_idx + 1,
-            config.num_shares,
-            width,
-            height,
-            1,
-            true,
-        ));
-    }
-
-    Ok(shares)
-}
-
-/// Extended meaningful decryption
-fn extended_meaningful_decrypt(shares: &[Share], config: &VCConfig) -> Result<DynamicImage> {
-    basic_threshold_decrypt(shares, config)
-}
-
 /// Naor-Shamir original scheme encryption
 fn naor_shamir_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Vec<Share>> {
     // The original Naor-Shamir is a (2,2) scheme with 2x2 pixel expansion
@@ -490,7 +259,7 @@ fn naor_shamir_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Vec<Sh
     let mut share1 = ImageBuffer::new(share_width, share_height);
     let mut share2 = ImageBuffer::new(share_width, share_height);
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     for y in 0..height {
         for x in 0..width {
@@ -510,13 +279,13 @@ fn naor_shamir_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Vec<Sh
             columns.as_mut_slice().shuffle(&mut rng);
 
             // Create permuted patterns for both shares
-            let share1_pattern = vec![
+            let share1_pattern = [
                 matrix[0][columns[0]],
                 matrix[0][columns[1]],
                 matrix[0][columns[2]],
                 matrix[0][columns[3]],
             ];
-            let share2_pattern = vec![
+            let share2_pattern = [
                 matrix[1][columns[0]],
                 matrix[1][columns[1]],
                 matrix[1][columns[2]],
@@ -625,7 +394,7 @@ fn taghaddos_latif_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Ve
     let mut share_a = ImageBuffer::new(share_width, share_height);
     let mut share_b = ImageBuffer::new(share_width, share_height);
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Process each pixel
     for y in 0..height {
@@ -639,19 +408,19 @@ fn taghaddos_latif_encrypt(image: &DynamicImage, config: &VCConfig) -> Result<Ve
                 let bit = (pixel_value >> bit_pos) & 1;
 
                 // Randomly select one of the 6 patterns
-                let pattern = patterns[rng.gen_range(0..6)];
+                let pattern = patterns[rng.random_range(0..6)];
 
                 if bit == 1 {
                     // White pixel (bit = 1): both shares get identical patterns
                     for i in 0..4 {
-                        share_a_colors[i] |= (pattern[i] << bit_pos);
-                        share_b_colors[i] = share_a_colors[i];
+                        share_a_colors[i] |= pattern[i] << bit_pos;
                     }
+                    share_b_colors.copy_from_slice(&share_a_colors);
                 } else {
                     // Black pixel (bit = 0): share B gets complement of share A
                     for i in 0..4 {
-                        share_a_colors[i] |= (pattern[i] << bit_pos);
-                        share_b_colors[i] |= ((1 - pattern[i]) << bit_pos);
+                        share_a_colors[i] |= pattern[i] << bit_pos;
+                        share_b_colors[i] |= (1 - pattern[i]) << bit_pos;
                     }
                 }
             }
@@ -1071,13 +840,12 @@ fn yamaguchi_nakajima_encrypt(
     );
 
     // Number of subpixels per pixel (default 16 for 4x4 subpixel structure)
-    let m = config.block_size.max(4) as usize;
+    let m = config.block_size.max(4);
     let sub_size = (m as f64).sqrt() as usize;
 
     // Contrast adjustment
     let contrast = 0.6;
     let l = (1.0 - contrast) / 2.0; // Lower bound
-    let u = l + contrast; // Upper bound
 
     // Process images with contrast adjustment and halftoning
     let sheet1_processed = apply_contrast_and_halftone(&sheet1, contrast, l);
@@ -1090,7 +858,7 @@ fn yamaguchi_nakajima_encrypt(
     let mut out_sheet1 = ImageBuffer::new(out_width, out_height);
     let mut out_sheet2 = ImageBuffer::new(out_width, out_height);
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Process each pixel
     for y in 0..height {
@@ -1113,7 +881,7 @@ fn yamaguchi_nakajima_encrypt(
 
             if !matrices.is_empty() {
                 // Randomly select a matrix
-                let matrix = &matrices[rng.gen_range(0..matrices.len())];
+                let matrix = &matrices[rng.random_range(0..matrices.len())];
 
                 // Fill subpixels
                 for i in 0..sub_size {
@@ -1140,8 +908,8 @@ fn yamaguchi_nakajima_encrypt(
                 // Fallback: fill with random pattern
                 for i in 0..sub_size {
                     for j in 0..sub_size {
-                        let val1 = if rng.gen_bool(0.5) { 255 } else { 0 };
-                        let val2 = if rng.gen_bool(0.5) { 255 } else { 0 };
+                        let val1 = if rng.random_bool(0.5) { 255 } else { 0 };
+                        let val2 = if rng.random_bool(0.5) { 255 } else { 0 };
 
                         out_sheet1.put_pixel(
                             x * sub_size as u32 + j as u32,
@@ -1317,13 +1085,6 @@ fn floyd_steinberg_dithering(
     result
 }
 
-/// Check if a triplet satisfies the encryption constraint
-fn check_constraint(t1: f64, t2: f64, tt: f64) -> bool {
-    let min_tt = (0.0_f64).max(t1 + t2 - 1.0);
-    let max_tt = t1.min(t2);
-    min_tt <= tt && tt <= max_tt
-}
-
 /// Adjust triplet values if they violate the constraint
 fn adjust_triplet(t1: f64, t2: f64, tt: f64) -> (f64, f64, f64) {
     let min_tt = (0.0_f64).max(t1 + t2 - 1.0);
@@ -1374,7 +1135,7 @@ fn generate_boolean_matrices(s1: usize, s2: usize, st: usize, m: usize) -> Vec<V
     }
 
     // Generate a single valid matrix (could be extended to generate all permutations)
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     base_patterns.shuffle(&mut rng);
 
     let matrix = vec![

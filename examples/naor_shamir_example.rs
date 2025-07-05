@@ -3,7 +3,7 @@
 //! This example demonstrates the original Naor-Shamir (2,2) visual cryptography scheme
 //! with 2x2 pixel expansion.
 
-use image::{DynamicImage, ImageBuffer, Luma};
+use image::DynamicImage;
 use std::path::Path;
 use visual_cryptography::{Algorithm, VCConfig, VisualCryptography};
 

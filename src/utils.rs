@@ -72,12 +72,12 @@ pub fn resize_to_match(
 /// Create a random noise image
 pub fn create_noise_image(width: u32, height: u32) -> ImageBuffer<Luma<u8>, Vec<u8>> {
     use rand::Rng;
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut img = ImageBuffer::new(width, height);
 
     for y in 0..height {
         for x in 0..width {
-            let value = if rng.gen_bool(0.5) { 0 } else { 255 };
+            let value = if rng.random_bool(0.5) { 0 } else { 255 };
             img.put_pixel(x, y, Luma([value]));
         }
     }

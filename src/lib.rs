@@ -92,16 +92,6 @@ impl VisualCryptography {
         }
         algorithms::decrypt(shares, &self.config)
     }
-
-    /// Create a progressive visual cryptography scheme
-    pub fn progressive(num_shares: usize) -> Result<Self> {
-        Self::new(VCConfig {
-            num_shares,
-            threshold: 2, // Progressive schemes can start revealing from 2 shares
-            algorithm: Algorithm::Progressive,
-            ..Default::default()
-        })
-    }
 }
 
 #[cfg(test)]
@@ -134,12 +124,5 @@ mod tests {
             ..Default::default()
         };
         assert!(VisualCryptography::new(config).is_err());
-    }
-
-    #[test]
-    fn test_progressive_creation() {
-        let vc = VisualCryptography::progressive(5).unwrap();
-        assert_eq!(vc.config.num_shares, 5);
-        assert_eq!(vc.config.algorithm, Algorithm::Progressive);
     }
 }

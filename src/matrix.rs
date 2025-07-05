@@ -72,12 +72,10 @@ pub fn generate_proper_sharing_matrices(k: usize, n: usize) -> Result<(ShareMatr
 
     // Generate S0 (white pixel matrix)
     let mut s0 = DMatrix::zeros(n, m);
-    let mut col = 0;
-
     // Generate all combinations of k-1 participants out of n-1 (excluding first participant)
     let combinations = generate_combinations(n - 1, k - 1);
 
-    for combo in combinations {
+    for (col, combo) in combinations.into_iter().enumerate() {
         // First participant always gets 1
         s0[(0, col)] = 1;
 
@@ -85,7 +83,6 @@ pub fn generate_proper_sharing_matrices(k: usize, n: usize) -> Result<(ShareMatr
         for &participant in &combo {
             s0[(participant + 1, col)] = 1;
         }
-        col += 1;
     }
 
     // Generate S1 (black pixel matrix) - complement of S0
@@ -109,7 +106,7 @@ pub fn generate_xor_matrices(n: usize) -> Result<XorMatrices> {
     // Generate all possible bit patterns for n-1 participants
     for col in 0..m {
         // First participant gets random bit
-        let first_bit = rand::thread_rng().gen_range(0..2);
+        let first_bit = rand::rng().random_range(0..2);
         white_matrix[(0, col)] = first_bit;
         black_matrix[(0, col)] = first_bit;
 
@@ -150,7 +147,7 @@ pub fn generate_color_mixing_matrices() -> ColorMixingMatrices {
     let mut complement_matrices = Vec::new();
 
     // Generate all 8 possible combinations for 3 participants
-    for i in 0..8 {
+    (0..8).for_each(|_| {
         let mut matrix = DMatrix::zeros(3, 8);
         let mut complement = DMatrix::zeros(3, 8);
 
@@ -165,7 +162,7 @@ pub fn generate_color_mixing_matrices() -> ColorMixingMatrices {
 
         basis_matrices.push(matrix);
         complement_matrices.push(complement);
-    }
+    });
 
     ColorMixingMatrices {
         basis_matrices,
@@ -291,7 +288,7 @@ pub fn generate_basic_matrices(k: usize, n: usize, block_size: usize) -> Result<
     matrices.push(white_matrix);
 
     // Generate matrices for black pixels
-    let black_matrix = generate_black_pixel_matrix(k, n, matrix_size);
+    let black_matrix = generate_black_pixel_matrix(n, matrix_size);
     matrices.push(black_matrix);
 
     Ok(matrices)
@@ -300,17 +297,16 @@ pub fn generate_basic_matrices(k: usize, n: usize, block_size: usize) -> Result<
 /// Generate matrix for white pixels in basic scheme
 fn generate_white_pixel_matrix(k: usize, n: usize, size: usize) -> ShareMatrix {
     let mut matrix = DMatrix::zeros(n, size);
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // For white pixels, ensure that any k shares will have some white subpixels
     for col in 0..size {
         // Randomly select k-1 shares to have black subpixels
         let mut indices: Vec<usize> = (0..n).collect();
-        indices.sort_by_key(|_| rng.gen::<u32>());
+        indices.sort_by_key(|_| rng.random::<u32>());
 
         let k_minus_1 = k.saturating_sub(1);
-        for i in 0..k_minus_1 {
-            let row_idx = indices[i];
+        for &row_idx in indices.iter().take(k_minus_1) {
             matrix[(row_idx, col)] = 1;
         }
     }
@@ -319,17 +315,9 @@ fn generate_white_pixel_matrix(k: usize, n: usize, size: usize) -> ShareMatrix {
 }
 
 /// Generate matrix for black pixels in basic scheme
-fn generate_black_pixel_matrix(k: usize, n: usize, size: usize) -> ShareMatrix {
-    let mut matrix = DMatrix::zeros(n, size);
-
+fn generate_black_pixel_matrix(n: usize, size: usize) -> ShareMatrix {
     // For black pixels, ensure that any k shares will have all black subpixels
-    for row in 0..n {
-        for col in 0..size {
-            matrix[(row, col)] = 1;
-        }
-    }
-
-    matrix
+    DMatrix::from_element(n, size, 1)
 }
 
 /// Select a row from a dispatching matrix based on pixel values
@@ -345,8 +333,8 @@ pub fn select_dispatching_row(
         (true, true) => &matrices.m3,
     };
 
-    let mut rng = rand::thread_rng();
-    let row_index = rng.gen_range(0..matrix.nrows());
+    let mut rng = rand::rng();
+    let row_index = rng.random_range(0..matrix.nrows());
 
     matrix.row(row_index).iter().cloned().collect()
 }

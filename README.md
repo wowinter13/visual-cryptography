@@ -1,9 +1,11 @@
 # Visual Cryptography
 
+A Rust implementation of visual cryptography algorithms supporting multiple schemes and configurable block sizes.
 
 
+## Overview
 
-
+Visual cryptography is a cryptographic technique that allows visual information (images) to be encrypted in such a way that the decryption can be performed by the human visual system without any complex cryptographic computations. The basic principle involves splitting a secret image into multiple shares that appear as random noise, but when overlaid, reveal the original secret.
 
 ### Implemented schemes
 
@@ -22,4 +24,4 @@
 
 ### Schemes to be evaluated
 
-- Extended Visual Cryptography for Natural Images (Nakajima & Yamaguchi, 2002) (don't like the current output, need thorough testing, smth is wrong)
+- Extended Visual Cryptography for Natural Images (Nakajima & Yamaguchi, 2002) (don't like the current output, need thorough testing, smth is definitely wrong)

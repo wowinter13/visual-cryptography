@@ -258,10 +258,8 @@ fn draw_diagonal_lines(
 ) {
     for i in 0..size {
         for j in 0..size {
-            if (i + j) % 4 == 0 {
-                if start_x + i < img.width() && start_y + j < img.height() {
-                    img.put_pixel(start_x + i, start_y + j, Luma([0u8]));
-                }
+            if (i + j) % 4 == 0 && start_x + i < img.width() && start_y + j < img.height() {
+                img.put_pixel(start_x + i, start_y + j, Luma([0u8]));
             }
         }
     }
@@ -280,10 +278,8 @@ fn draw_concentric_squares(
             let dist_y = if y > center { y - center } else { center - y };
             let max_dist = dist_x.max(dist_y);
 
-            if max_dist % 8 == 0 {
-                if start_x + x < img.width() && start_y + y < img.height() {
-                    img.put_pixel(start_x + x, start_y + y, Luma([0u8]));
-                }
+            if max_dist % 8 == 0 && start_x + x < img.width() && start_y + y < img.height() {
+                img.put_pixel(start_x + x, start_y + y, Luma([0u8]));
             }
         }
     }

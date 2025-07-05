@@ -1,6 +1,6 @@
 //! Share management for visual cryptography
 
-use image::{DynamicImage, ImageBuffer, Luma, Rgb, Rgba};
+use image::{DynamicImage, ImageBuffer, Luma};
 use std::fmt;
 
 /// Type of share based on image format
