@@ -1,9 +1,9 @@
 [package]
 name = "visual-cryptography"
-version = "0.0.3"
+version = "0.1.0"
 edition = "2021"
 authors = ["Vlad Dyachenko wowinter13 <gotta.go.vlad@gmail.com>"]
-description = "A Rust implementation of visual cryptography algorithms supporting multiple schemes and block sizes"
+description = "A Rust implementation of main visual cryptography algorithms supporting multiple schemes and block sizes"
 license = "MIT"
 repository = "https://github.com/wowinter13/visual-cryptography"
 keywords = [
